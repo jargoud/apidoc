@@ -2,8 +2,13 @@
 
 namespace Despark\Apidoc\Commands;
 
+use Exception;
 use Illuminate\Console\Command;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Route;
 use ReflectionClass;
+use ReflectionException;
 
 /**
  * Class ApiDocGenerator
@@ -12,7 +17,6 @@ use ReflectionClass;
  */
 class ApiDocGenerator extends Command
 {
-
     /**
      * Code example
      * @apiDesc Send a reset link to the given user.
@@ -23,117 +27,106 @@ class ApiDocGenerator extends Command
      * @apiErr 422 | Unauthorized access
      * @apiResp 200 | User is logged in
      */
-    
+
     /**
      * The name and signature of the console command.
      *
      * @var string
      */
     protected $signature = 'apidoc:generate';
-    
+
     /**
      * The console command description.
      *
      * @var string
      */
     protected $description = 'Generate api documentation from controllers';
-    
-    
+
     /**
      * generated code for swagger
      * @var array
      */
     protected $swagger;
-    
-    /**
-     * Create a new command instance.
-     *
-     * @return void
-     */
-    public function __construct()
-    {
-        parent::__construct();
-    }
-    
+
     /**
      * Execute the console command.
      *
-     * @return mixed
+     * @return void|null
+     * @throws Exception
      */
-    public function handle()
+    public function handle(): void
     {
-        if ( ! env('APP_URL')) {
-            return $this->error('Please, set APP_URL in your env file');
+        if (!env('APP_URL')) {
+            $this->error('Please, set APP_URL in your env file');
+            return;
         }
-        $this->config = $this->setMainSwaggerInfo();
-        foreach ($this->getRouteControllerData() as $controller => $methods) {
-            
+
+        $this->setMainSwaggerInfo();
+        foreach ($this->getRouteControllerData() as $methods) {
             //write controller resource
             $currentControllerClassName = current($methods);
             foreach ($methods as $method) {
-                $this->info($currentControllerClassName['controllerClassName'].'@'.$method['actionName']);
+                $this->info($currentControllerClassName['controllerClassName'] . '@' . $method['actionName']);
                 $this->setTag($method);
                 $this->setPaths($method);
             }
-            
         }
-        
+
         //write doc text to file
         $this->writeToFile();
     }
-    
+
     /**
      * Get controllers data from routes
-     * @return mixed
      */
-    protected function getRouteControllerData()
+    protected function getRouteControllerData(): array
     {
         $controllers = [];
-        foreach (\Route::getRoutes() as $route) {
+        foreach (Route::getRoutes() as $route) {
             $controllerName = explode('@', $route->getActionName());
-            
-            $controllerNameSpace = array_get($controllerName, 0);
-            $actionName = array_get($controllerName, 1);
-            
+
+            $controllerNameSpace = Arr::get($controllerName, 0);
+            $actionName = Arr::get($controllerName, 1);
+
             $controllerClassName = explode('\\', $controllerNameSpace);
             $controllerClassName = end($controllerClassName);
-            
+
             if ($controllerClassName === 'Closure') {
                 continue;
             }
-            
+
             $controllers[$controllerNameSpace][] = [
-                'host'                => $route->domain(),
-                'method'              => implode('|', $route->methods()),
-                'uri'                 => $route->uri(),
-                'name'                => $route->getName(),
+                'host' => $route->domain(),
+                'method' => implode('|', $route->methods()),
+                'uri' => $route->uri(),
+                'name' => $route->getName(),
                 'controllerNameSpace' => $controllerNameSpace,
                 'controllerClassName' => $controllerClassName,
-                'actionName'          => $actionName,
+                'actionName' => $actionName,
             ];
         }
-        
+
         return $controllers;
     }
-    
+
     /**
      * Set main data for swagger. Version, title ,etc.
      */
-    protected function setMainSwaggerInfo()
+    protected function setMainSwaggerInfo(): void
     {
         $this->swagger['swagger'] = '2.0';
         $this->swagger['info'] =
             [
                 'description' => config('apidoc.apiDescription'),
-                'version'     => config('apidoc.apiVersion'),
-                'title'       => config('apidoc.apiTitle'),
+                'version' => config('apidoc.apiVersion'),
+                'title' => config('apidoc.apiTitle'),
             ];
 
         $this->swagger['host'] = str_replace(['http://', 'https://'], '', env('APP_URL'));
-        $this->swagger['basePath'] = '/'.trim(config('apidoc.apiBasePath'), '/');
+        $this->swagger['basePath'] = '/' . trim(config('apidoc.apiBasePath'), '/');
         $this->swagger['tags'] = [];
     }
-    
+
     /**
      * Set all tags
      * @param $methods
@@ -141,78 +134,71 @@ class ApiDocGenerator extends Command
     protected function setTag($methods)
     {
         $tag = [
-            'name'        => str_replace(config('apidoc.apiBasePath'), '', array_get($methods, 'uri', '')),
-            'description' => array_get($methods, 'controllerClassName', ''),
+            'name' => str_replace(config('apidoc.apiBasePath'), '', Arr::get($methods, 'uri', '')),
+            'description' => Arr::get($methods, 'controllerClassName', ''),
         ];
-        
+
         $this->swagger['tags'][] = $tag;
         // add new tag
     }
-    
-    /**
-     * Set Scheme
-     * @return array
-     */
-    protected function setSchemes()
-    {
-        return $this->swagger['schemes'];
-    }
-    
+
     /**
      * Set path
      * @param $method
      * @return array|void
+     * @throws Exception
      */
     protected function setPaths($method)
     {
         $docArray = $this->methodCommentToArray($method);
-        
-        if ( ! count($docArray)) {
+
+        if (!count($docArray)) {
             return;
         }
-        
+
         $methodType = strtolower(str_replace('|HEAD', '', $method['method']));
-        
+
         $path = [
-            'tags'        => [
-                str_replace('CE\Http\Controllers', '', array_get($method, 'controllerNameSpace', '')),
+            'tags' => [
+                str_replace('CE\Http\Controllers', '', Arr::get($method, 'controllerNameSpace', '')),
             ],
-            'summary'     => array_get($docArray, 'desc'),
-            'description' => array_get($method, 'controllerClassName', ''),
+            'summary' => Arr::get($docArray, 'desc'),
+            'description' => Arr::get($method, 'controllerClassName', ''),
             'operationId' => '',
-            'consumes'    => [
+            'consumes' => [
                 'application/json',
                 'application/xml',
             ],
-            'produces'    => [
+            'produces' => [
                 "application/xml",
                 "application/json",
             ],
-            'parameters'  => $this->setParams($docArray, $method),
-            'responses'   => $this->setResponses($docArray),
+            'parameters' => $this->setParams($docArray, $method),
+            'responses' => $this->setResponses($docArray),
         ];
-        
-        
-        return $this->swagger['paths'][str_replace('api/v1', '', array_get($method, 'uri', ''))][$methodType] = $path;
+
+
+        return $this->swagger['paths'][str_replace('api/v1', '', Arr::get($method, 'uri', ''))][$methodType] = $path;
     }
-    
+
     /**
      * Set method params
      * @param $docArray
      * @param $method
      * @return array
+     * @throws Exception
      */
-    protected function setParams($docArray, $method)
+    protected function setParams($docArray, $method): array
     {
         $params = [];
-        if (preg_match_all('/\{(.*?)\}/', $method['uri'], $paramsInPath)) {
+        if (preg_match_all('/\{(.*?)}/', $method['uri'], $paramsInPath)) {
             foreach ($paramsInPath[1] as $param) {
                 $param = str_replace('?', '', $param);
                 $field = [
-                    'name'        => $param,
-                    'type'        => 'integer',
+                    'name' => $param,
+                    'type' => 'integer',
                     'description' => 'Param in path',
-                    'in'          => 'path',
+                    'in' => 'path',
                 ];
                 if (strpos($param, '?') === false) {
                     $field['required'] = true;
@@ -220,38 +206,38 @@ class ApiDocGenerator extends Command
                 $params[$param] = $field;
             }
         }
-        
-        foreach (array_get($docArray, 'params', []) as $paramString) {
+
+        foreach (Arr::get($docArray, 'params', []) as $paramString) {
             $paramOptions = $this->setParam($paramString, $method, $params);
             if ($paramOptions['type'] === 'file') {
-                if ( ! isset($paramOptions['name']) OR empty($paramOptions['name'])) {
+                if (!isset($paramOptions['name']) or empty($paramOptions['name'])) {
                     $paramOptions['name'] = $paramOptions['type'];
                 }
             }
-            $params[isset($paramOptions['name']) ? $paramOptions['name'] : ''] = $paramOptions;
+            $params[$paramOptions['name'] ?? ''] = $paramOptions;
         }
-        
+
         // We need to reset the array to numeric in order for json to create it as array.
         return array_values($params);
     }
-    
+
     /**
      * Set param
      * @param       $paramDocString
      * @param       $method
      * @param array $params Already built params from route.
      * @return array
-     * @throws \Exception
+     * @throws Exception
      */
-    protected function setParam($paramDocString, $method, &$params)
+    protected function setParam($paramDocString, $method, array &$params): array
     {
         $options = [];
-        
+
         $descMessage = explode('|', $paramDocString);
-        $descMessage = array_get($descMessage, 1);
-        $paramDocString = str_replace('|'.$descMessage, '', $paramDocString);
+        $descMessage = Arr::get($descMessage, 1);
+        $paramDocString = str_replace('|' . $descMessage, '', $paramDocString);
         $options['description'] = trim($descMessage);
-        
+
         // get type
         if (strpos($paramDocString, 'string') !== false) {
             $options['type'] = 'string';
@@ -289,28 +275,28 @@ class ApiDocGenerator extends Command
             $options['type'] = 'file';
             $paramDocString = str_replace('file', '', $paramDocString);
         } // get type
-        
+
         // get required
         if (strpos($paramDocString, 'required') !== false) {
             $options['required'] = true;
             $paramDocString = str_replace('required', '', $paramDocString);
         }
-        
+
         // parameter send from
         $options['in'] = 'formData';
-        
+
         $paramDocString = str_replace('in_path', '', $paramDocString, $count);
         if ($count) {
             $options['in'] = 'path';
         }
-        
+
         $count = 0;
-        
+
         $paramDocString = str_replace('in_query', '', $paramDocString, $count);
         if ($count) {
             $options['in'] = 'query';
         }
-        
+
         // get parameter
         $paramDocString = trim($paramDocString);
         if (strpos($paramDocString, '$') !== false) {
@@ -321,82 +307,79 @@ class ApiDocGenerator extends Command
                 unset($params[$paramDocString]);
             }
         }
-        
-        if ( ! isset($options['type']) || ! $options['type']) {
-            throw new \Exception('Missing type for '.$method['controllerNameSpace'].'@'.$method['actionName'].' with param '.$options['name']);
+
+        if (!isset($options['type']) || !$options['type']) {
+            throw new Exception(
+                'Missing type for ' . $method['controllerNameSpace'] . '@' . $method['actionName'] . ' with param ' . $options['name']
+            );
         }
-        
+
         return $options;
     }
-    
+
     /**
      * Set response
      * @param $paramDocString
      * @return array
      */
-    protected function setResponses($paramDocString)
+    protected function setResponses($paramDocString): array
     {
         $responses = [];
-        foreach (array_get($paramDocString, 'responses', []) as $response) {
+        foreach (Arr::get($paramDocString, 'responses', []) as $response) {
             $responseMessage = explode('|', $response);
-            $responseMessage = array_get($responseMessage, 1);
-            $responseCode = str_replace('|'.$responseMessage, '', $response);
-            
+            $responseMessage = Arr::get($responseMessage, 1);
+            $responseCode = str_replace('|' . $responseMessage, '', $response);
+
             $responses[trim($responseCode)]['description'][] = trim($responseMessage);
         }
-        
+
         return $responses;
-        
     }
-    
+
     /**
      * Get documentation to array
      * @param $method
      * @return array
+     * @throws ReflectionException
      */
-    protected function methodCommentToArray($method)
+    protected function methodCommentToArray($method): array
     {
-        $actionMethodName = array_get($method, 'actionName', null);
-        $controllerNameSpace = array_get($method, 'controllerNameSpace', null);
-        
-        if ((empty($actionMethodName)) || ( ! $controllerNameSpace)) {
+        $actionMethodName = Arr::get($method, 'actionName');
+        $controllerNameSpace = Arr::get($method, 'controllerNameSpace');
+
+        if ((empty($actionMethodName)) || (!$controllerNameSpace)) {
             return [];
         }
-        
+
         $documentationArray = [];
         $reflector = new ReflectionClass($controllerNameSpace);
-        if ( ! $reflector->hasMethod($actionMethodName)) {
+        if (!$reflector->hasMethod($actionMethodName)) {
             return [];
         }
         // to get the Method DocBlock
         $doc = $reflector->getMethod($actionMethodName)->getDocComment();
-        
+
         foreach (explode("\n", $doc) as $row) {
             $this->commentRowReader($row, '@apiDesc', 'desc', $documentationArray);
             $this->commentRowReader($row, '@apiParam', 'params', $documentationArray);
             $this->commentRowReader($row, '@apiErr', 'responses', $documentationArray);
             $this->commentRowReader($row, '@apiResp', 'responses', $documentationArray);
         }
-        
-        
+
+
         return $documentationArray;
-        
     }
-    
-    
+
+
     /**
      * Read row data and set data into arrays
-     * @param string $row data from the comment
-     * @param string $needle needed parameter.
-     * @param string $name what name should we use for array key
-     * @param array  $documentationArray
      */
-    private function commentRowReader($row, $needle, $name, &$documentationArray)
+    private function commentRowReader(string $row, string $needle, string $name, array &$documentationArray): void
     {
         $data = explode($needle, $row);
-        if (count($data >= 1)) {
-            $dataString = trim(array_get($data, 1));
-            if ( ! empty($dataString)) {
+        if (count($data) >= 1) {
+            $dataString = trim(Arr::get($data, 1));
+            if (!empty($dataString)) {
                 if ($name === 'desc') {
                     $documentationArray[$name] = $dataString;
                 } else {
@@ -405,17 +388,15 @@ class ApiDocGenerator extends Command
             }
         }
     }
-    
+
     /**
      * Write swagger data to json file
      */
     protected function writeToFile()
     {
         $fileDir = storage_path('appDoc');
-        \File::deleteDirectory($fileDir);
-        \File::makeDirectory($fileDir);
-        \File::put($fileDir.DIRECTORY_SEPARATOR.'resource.json', json_encode($this->swagger));
+        File::deleteDirectory($fileDir);
+        File::makeDirectory($fileDir);
+        File::put($fileDir . DIRECTORY_SEPARATOR . 'resource.json', json_encode($this->swagger));
     }
-    
-    
 }
